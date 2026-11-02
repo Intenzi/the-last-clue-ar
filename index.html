@@ -185,6 +185,29 @@
       box-shadow: 0 4px 14px rgba(245, 158, 11, 0.4);
     }
 
+    /* Floating AR Clue Banner (Non-blocking) */
+    .clue-banner {
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      animation: slideUp 0.3s ease;
+    }
+    @keyframes slideUp {
+      from { transform: translateY(15px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .clue-banner-icon { font-size: 1.8rem; }
+    .clue-banner-text { display: flex; flex-direction: column; gap: 2px; }
+    .clue-banner-title { font-size: 0.88rem; font-weight: 700; color: var(--accent); }
+    .clue-banner-desc { font-size: 0.78rem; color: var(--text-dim); }
+
     /* Evidence Modal */
     .modal-overlay {
       position: absolute;
@@ -347,6 +370,15 @@
 
     <!-- Bottom Inventory & Actions -->
     <div class="bottom-bar hud-interactive">
+      <!-- Floating AR Clue Banner (Non-blocking) -->
+      <div id="clue-banner" class="clue-banner" style="display:none;" onclick="openCurrentEvidenceModal()">
+        <div class="clue-banner-icon" id="banner-icon">⏱️</div>
+        <div class="clue-banner-text">
+          <div class="clue-banner-title" id="banner-title">EVIDENCE #1: Broken Watch</div>
+          <div class="clue-banner-desc" id="banner-desc">Stopped at 11:45 PM. Tap to read notes.</div>
+        </div>
+      </div>
+
       <button id="btn-deduce" class="btn-deduce" onclick="openDeductionModal()">
         ⚖️ Identify Murder Weapon
       </button>
@@ -705,14 +737,24 @@
 
         anchor.onTargetFound = () => {
           document.getElementById('status-dot').classList.add('active');
-          document.getElementById('status-text').innerText = `Locked on Evidence #${index + 1}: ${clue.name}!`;
+          document.getElementById('status-text').innerText = `3D Evidence Discovered: ${clue.name}!`;
           if (!clue.found) {
-            inspectClue(index);
+            clue.found = true;
+            document.getElementById('sfx-clue').play().catch(()=>{});
+            document.getElementById(clue.slot).classList.add('found');
+          }
+          // Show sleek bottom toast without blocking the 3D view
+          showClueBanner(index);
+
+          const allFound = CLUES.every(c => c.found);
+          if (allFound) {
+            document.getElementById('btn-deduce').style.display = 'block';
           }
         };
         anchor.onTargetLost = () => {
           document.getElementById('status-dot').classList.remove('active');
           document.getElementById('status-text').innerText = "Search classroom for next Evidence Marker (#01 to #05)...";
+          hideClueBanner();
         };
 
         // Center this clue directly on its physical marker
@@ -732,36 +774,53 @@
       const gltfLoader = new THREE.GLTFLoader();
       const textureLoader = new THREE.TextureLoader();
 
+      // Add a dedicated light to this anchor group so the 3D model pops
+      if (isCentered) {
+        const anchorLight = new THREE.PointLight(0xffffff, 2.0, 3.0);
+        anchorLight.position.set(0, 0, 0.6);
+        parent.add(anchorLight);
+      }
+
       if (clue.type === "gltf") {
         gltfLoader.load(clue.file, (gltf) => {
           const model = gltf.scene;
-          model.scale.set(...clue.scale);
           if (isCentered) {
-            model.position.set(0, 0.06, 0); // centered flat on marker
+            // High visibility scale on top of the card
+            const arScales = [6.5, 4.8, 1.0, 1.0, 5.5];
+            const s = arScales[index];
+            model.scale.set(s, s, s);
+            // In MindAR: XY is card plane, +Z is normal out towards camera
+            // Rotate model 90 deg around X so base sits on card and top faces camera
+            model.rotation.set(Math.PI / 2, 0, 0);
+            model.position.set(0, 0, 0.05); // Float 5cm above card face
           } else {
+            model.scale.set(...clue.scale);
             model.position.set(...clue.pos);
           }
-          model.userData = { clueIndex: index };
+          model.userData = { clueIndex: index, isAR: isCentered };
           parent.add(model);
           clickableObjects.push(model);
         });
       } else if (clue.type === "plane") {
         textureLoader.load(clue.file, (texture) => {
-          const geo = new THREE.PlaneGeometry(clue.size[0] * 1.5, clue.size[1] * 1.5);
+          const arSizes = [null, null, [0.85, 0.95], [0.65, 0.95], null];
+          const [pw, ph] = isCentered ? arSizes[index] : [clue.size[0] * 1.5, clue.size[1] * 1.5];
+          const geo = new THREE.PlaneGeometry(pw, ph);
           const mat = new THREE.MeshStandardMaterial({
             map: texture,
             transparent: true,
-            roughness: 0.8
+            roughness: 0.6,
+            side: THREE.DoubleSide
           });
           const mesh = new THREE.Mesh(geo, mat);
           if (isCentered) {
-            mesh.position.set(0, 0.01, 0);
-            mesh.rotation.set(-Math.PI / 2, 0, 0); // lay flat on top of card
+            mesh.position.set(0, 0, 0.02); // Just above card face
+            mesh.rotation.set(0, 0, 0);    // Lay flat in the XY plane of the card
           } else {
             mesh.position.set(...clue.pos);
             if (clue.rot) mesh.rotation.set(...clue.rot);
           }
-          mesh.userData = { clueIndex: index };
+          mesh.userData = { clueIndex: index, isAR: isCentered };
           parent.add(mesh);
           clickableObjects.push(mesh);
         });
@@ -829,20 +888,31 @@
     }
 
     function setupLighting(target) {
-      const ambLight = new THREE.AmbientLight(0xffffff, 0.85);
+      const ambLight = new THREE.AmbientLight(0xffffff, 1.4);
       target.add(ambLight);
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-      dirLight.position.set(1, 3, 2);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+      dirLight.position.set(0, 2, 4);
       target.add(dirLight);
     }
 
     function animateClues() {
       const time = performance.now() * 0.002;
       clickableObjects.forEach(obj => {
-        if (obj.userData.clueIndex === 0) { // watch
-          obj.rotation.y = Math.sin(time) * 0.15;
-        } else if (obj.userData.clueIndex === 4) { // paperweight
-          obj.rotation.y += 0.005;
+        if (obj.userData.isAR) {
+          // In AR: slow rotation on card to make 3D depth obvious!
+          if (obj.userData.clueIndex === 0) { // watch: tilt spin
+            obj.rotation.z = Math.sin(time) * 0.25;
+          } else if (obj.userData.clueIndex === 4) { // paperweight: 360 rotation
+            obj.rotation.y += 0.012;
+          } else if (obj.userData.clueIndex === 1) { // glass: gentle hover
+            obj.position.z = 0.04 + Math.sin(time * 2) * 0.008;
+          }
+        } else {
+          if (obj.userData.clueIndex === 0) {
+            obj.rotation.y = Math.sin(time) * 0.15;
+          } else if (obj.userData.clueIndex === 4) {
+            obj.rotation.y += 0.005;
+          }
         }
       });
     }
@@ -882,7 +952,28 @@
       window.addEventListener('pointerdown', onPointerDown);
     }
 
-    // Inspect Clue
+    let currentActiveClueIndex = null;
+
+    function showClueBanner(index) {
+      currentActiveClueIndex = index;
+      const clue = CLUES[index];
+      document.getElementById('banner-icon').innerText = clue.icon;
+      document.getElementById('banner-title').innerText = `EVIDENCE #${index + 1}: ${clue.name}`;
+      document.getElementById('banner-desc').innerText = clue.desc;
+      document.getElementById('clue-banner').style.display = 'flex';
+    }
+
+    function hideClueBanner() {
+      document.getElementById('clue-banner').style.display = 'none';
+    }
+
+    function openCurrentEvidenceModal() {
+      if (currentActiveClueIndex !== null) {
+        inspectClue(currentActiveClueIndex);
+      }
+    }
+
+    // Inspect Clue Modal
     function inspectClue(index) {
       const clue = CLUES[index];
       if (!clue.found) {
