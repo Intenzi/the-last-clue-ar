@@ -424,12 +424,12 @@
         A man has been found dead in his study. Five clues remain scattered around the crime scene. Find each clue, analyze the evidence, and identify the murder weapon before time expires.
       </p>
 
-      <button class="btn-primary" onclick="initExperience('gyro')">
-        🌐 360° Room Search (Markerless AR — No Paper Needed)
+      <button class="btn-primary" onclick="initExperience('ar')">
+        🎯 Classroom Multi-Marker AR (Scan Markers #01 to #05)
       </button>
 
-      <button class="btn-secondary" style="border-color:var(--accent); color:var(--text);" onclick="initExperience('ar')">
-        🎯 Target Card AR (Point at Printed / Screen Marker)
+      <button class="btn-secondary" style="border-color:var(--accent); color:var(--text);" onclick="initExperience('gyro')">
+        🌐 360° Room Search (Markerless AR — No Paper Needed)
       </button>
 
       <button class="btn-secondary" onclick="initExperience('virtual')">
@@ -437,7 +437,7 @@
       </button>
 
       <p style="font-size: 0.75rem; color: #64748b; margin: 4px 0 0 0;">
-        For Target Card mode: display <code>assets/targets/card.png</code> on another screen or print it
+        Print <code>assets/markers/classroom_markers_A4_printout.png</code> and place cards across classroom
       </p>
     </div>
   </div>
@@ -679,11 +679,11 @@
       animate();
     }
 
-    // Mode A: MindAR Image Tracking
+    // Mode A: MindAR Multi-Target Classroom AR
     async function initARScene() {
       mindarThree = new window.MINDAR.IMAGE.MindARThree({
         container: document.getElementById('ar-container'),
-        imageTargetSrc: 'assets/targets/card.mind',
+        imageTargetSrc: 'assets/targets/classroom_targets.mind',
         filterMinCF: 0.0001,
         filterBeta: 0.001
       });
@@ -693,27 +693,82 @@
       scene = s;
       camera = c;
 
-      const anchor = mindarThree.addAnchor(0);
-      anchor.group.add(anchorGroup);
+      setupLighting(scene);
 
-      anchor.onTargetFound = () => {
-        document.getElementById('status-dot').classList.add('active');
-        document.getElementById('status-text').innerText = "Crime Scene Locked — Tap Clues to Inspect";
-      };
-      anchor.onTargetLost = () => {
-        document.getElementById('status-dot').classList.remove('active');
-        document.getElementById('status-text').innerText = "Target Lost — Point at Marker";
-      };
+      // Create 5 distinct anchors, each bound to its own marker image
+      CLUES.forEach((clue, index) => {
+        const anchor = mindarThree.addAnchor(index);
+        const group = new THREE.Group();
+        anchor.group.add(group);
 
-      setupLighting(anchorGroup);
-      loadClueAssets(anchorGroup);
+        anchor.onTargetFound = () => {
+          document.getElementById('status-dot').classList.add('active');
+          document.getElementById('status-text').innerText = `Locked on Evidence #${index + 1}: ${clue.name}!`;
+          if (!clue.found) {
+            inspectClue(index);
+          }
+        };
+        anchor.onTargetLost = () => {
+          document.getElementById('status-dot').classList.remove('active');
+          document.getElementById('status-text').innerText = "Search classroom for next Evidence Marker (#01 to #05)...";
+        };
+
+        // Center this clue directly on its physical marker
+        loadSingleClue(clue, index, group, true);
+      });
+
       setupRaycaster();
 
       await mindarThree.start();
       renderer.setAnimationLoop(() => {
-        // subtle float/spin animations
         animateClues();
         renderer.render(scene, camera);
+      });
+    }
+
+    function loadSingleClue(clue, index, parent, isCentered = false) {
+      const gltfLoader = new THREE.GLTFLoader();
+      const textureLoader = new THREE.TextureLoader();
+
+      if (clue.type === "gltf") {
+        gltfLoader.load(clue.file, (gltf) => {
+          const model = gltf.scene;
+          model.scale.set(...clue.scale);
+          if (isCentered) {
+            model.position.set(0, 0.06, 0); // centered flat on marker
+          } else {
+            model.position.set(...clue.pos);
+          }
+          model.userData = { clueIndex: index };
+          parent.add(model);
+          clickableObjects.push(model);
+        });
+      } else if (clue.type === "plane") {
+        textureLoader.load(clue.file, (texture) => {
+          const geo = new THREE.PlaneGeometry(clue.size[0] * 1.5, clue.size[1] * 1.5);
+          const mat = new THREE.MeshStandardMaterial({
+            map: texture,
+            transparent: true,
+            roughness: 0.8
+          });
+          const mesh = new THREE.Mesh(geo, mat);
+          if (isCentered) {
+            mesh.position.set(0, 0.01, 0);
+            mesh.rotation.set(-Math.PI / 2, 0, 0); // lay flat on top of card
+          } else {
+            mesh.position.set(...clue.pos);
+            if (clue.rot) mesh.rotation.set(...clue.rot);
+          }
+          mesh.userData = { clueIndex: index };
+          parent.add(mesh);
+          clickableObjects.push(mesh);
+        });
+      }
+    }
+
+    function loadClueAssets(parent) {
+      CLUES.forEach((clue, index) => {
+        loadSingleClue(clue, index, parent, false);
       });
     }
 
@@ -777,39 +832,6 @@
       const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
       dirLight.position.set(1, 3, 2);
       target.add(dirLight);
-    }
-
-    function loadClueAssets(parent) {
-      const gltfLoader = new THREE.GLTFLoader();
-      const textureLoader = new THREE.TextureLoader();
-
-      CLUES.forEach((clue, index) => {
-        if (clue.type === "gltf") {
-          gltfLoader.load(clue.file, (gltf) => {
-            const model = gltf.scene;
-            model.scale.set(...clue.scale);
-            model.position.set(...clue.pos);
-            model.userData = { clueIndex: index };
-            parent.add(model);
-            clickableObjects.push(model);
-          });
-        } else if (clue.type === "plane") {
-          textureLoader.load(clue.file, (texture) => {
-            const geo = new THREE.PlaneGeometry(clue.size[0], clue.size[1]);
-            const mat = new THREE.MeshStandardMaterial({
-              map: texture,
-              transparent: true,
-              roughness: 0.8
-            });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(...clue.pos);
-            if (clue.rot) mesh.rotation.set(...clue.rot);
-            mesh.userData = { clueIndex: index };
-            parent.add(mesh);
-            clickableObjects.push(mesh);
-          });
-        }
-      });
     }
 
     function animateClues() {
