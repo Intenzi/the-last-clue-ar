@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>The Last Clue — AR Detective Investigation</title>
   
-  <!-- Three.js and MindAR libraries -->
+  <!-- Three.js and MindAR libraries (UMD Bundle) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.1.5/dist/mindar-image-three.prod.js"></script>
 
   <style>
     :root {
@@ -685,7 +685,9 @@
         container: document.getElementById('ar-container'),
         imageTargetSrc: 'assets/targets/classroom_targets.mind',
         filterMinCF: 0.0001,
-        filterBeta: 0.001
+        filterBeta: 0.001,
+        uiLoading: "no",
+        uiScanning: "no"
       });
 
       const { renderer: r, scene: s, camera: c } = mindarThree;
