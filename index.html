@@ -306,6 +306,23 @@
       cursor: pointer;
     }
   </style>
+  <script>
+    // Polyfill getUserMedia to fallback to user/FaceTime camera on laptops
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (constraints) => {
+        try {
+          return await origGUM(constraints);
+        } catch (err) {
+          if (constraints && constraints.video) {
+            console.warn("Fallback to basic video constraint for desktop/laptop webcam");
+            return await origGUM({ video: true, audio: false });
+          }
+          throw err;
+        }
+      };
+    }
+  </script>
 </head>
 <body>
 
@@ -407,16 +424,20 @@
         A man has been found dead in his study. Five clues remain scattered around the crime scene. Find each clue, analyze the evidence, and identify the murder weapon before time expires.
       </p>
 
-      <button class="btn-primary" onclick="initExperience('ar')">
-        📷 Start WebAR (Camera Mode)
+      <button class="btn-primary" onclick="initExperience('gyro')">
+        🌐 360° Room Search (Markerless AR — No Paper Needed)
+      </button>
+
+      <button class="btn-secondary" style="border-color:var(--accent); color:var(--text);" onclick="initExperience('ar')">
+        🎯 Target Card AR (Point at Printed / Screen Marker)
       </button>
 
       <button class="btn-secondary" onclick="initExperience('virtual')">
-        🖥️ Virtual 3D Investigation (No Camera / Test Mode)
+        🖥️ Virtual 3D Investigation (No Camera / Simulator)
       </button>
 
       <p style="font-size: 0.75rem; color: #64748b; margin: 4px 0 0 0;">
-        Target Anchor: <code>assets/targets/card.png</code> (or display on a second screen)
+        For Target Card mode: display <code>assets/targets/card.png</code> on another screen or print it
       </p>
     </div>
   </div>
@@ -505,15 +526,157 @@
     // Start Experience
     async function initExperience(mode) {
       document.getElementById('start-screen').style.display = 'none';
-      isVirtualMode = (mode === 'virtual');
 
-      if (isVirtualMode) {
+      if (mode === 'virtual') {
+        isVirtualMode = true;
         initVirtualScene();
+      } else if (mode === 'gyro') {
+        try {
+          await initGyroARScene();
+        } catch (err) {
+          console.warn("Gyro/Camera error, fallback to virtual:", err);
+          alert("Camera access was blocked or unavailable (" + (err.message || err.name) + "). Switching to Virtual 3D Investigation mode.");
+          isVirtualMode = true;
+          initVirtualScene();
+        }
       } else {
-        await initARScene();
+        try {
+          await initARScene();
+        } catch (err) {
+          console.warn("MindAR camera error, fallback:", err);
+          alert("Camera could not be started in Marker mode (" + (err.message || err.name) + "). Switching to Virtual 3D mode.");
+          isVirtualMode = true;
+          initVirtualScene();
+        }
       }
 
       startTimer();
+    }
+
+    // Mode: 360 Markerless AR (Camera Feed + Gyroscope / Pan)
+    async function initGyroARScene() {
+      const container = document.getElementById('ar-container');
+
+      // 1. Create Background Video Feed
+      const video = document.createElement('video');
+      video.setAttribute('autoplay', '');
+      video.setAttribute('muted', '');
+      video.setAttribute('playsinline', '');
+      video.style.position = 'absolute';
+      video.style.top = '0';
+      video.style.left = '0';
+      video.style.width = '100%';
+      video.style.height = '100%';
+      video.style.objectFit = 'cover';
+      video.style.zIndex = '0';
+      container.appendChild(video);
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+
+      // 2. Setup Three.js transparent overlay
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+      camera.position.set(0, 0, 0);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.domElement.style.position = 'absolute';
+      renderer.domElement.style.top = '0';
+      renderer.domElement.style.left = '0';
+      renderer.domElement.style.zIndex = '1';
+      container.appendChild(renderer.domElement);
+
+      setupLighting(scene);
+      scene.add(anchorGroup);
+
+      // Distribute clues in 360 circle around player
+      const clueDist = 1.3;
+      const gyroPositions = [
+        [0, -0.2, -clueDist],                          // Watch (front)
+        [clueDist * 0.8, -0.4, -clueDist * 0.5],       // Glass (front right)
+        [clueDist * 0.7, 0.0, clueDist * 0.7],         // Letter (rear right)
+        [-clueDist * 0.4, -0.5, clueDist * 0.8],       // Footprint (rear left)
+        [-clueDist * 0.8, -0.1, -clueDist * 0.4]       // Paperweight (front left)
+      ];
+      CLUES.forEach((c, idx) => {
+        c.pos = gyroPositions[idx];
+      });
+
+      loadClueAssets(anchorGroup);
+      setupRaycaster();
+
+      document.getElementById('status-dot').classList.add('active');
+      document.getElementById('status-text').innerText = "360° Room Search Active — Pan phone or drag to find clues";
+
+      // 3. Motion Controls: Gyro on mobile, Drag to look on desktop
+      let lon = 0, lat = 0, isUserInteracting = false, onPointerDownPointerX = 0, onPointerDownPointerY = 0, onPointerDownLon = 0, onPointerDownLat = 0;
+
+      // Check device orientation support
+      let hasOrientation = false;
+      if (window.DeviceOrientationEvent) {
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+          try {
+            const resp = await DeviceOrientationEvent.requestPermission();
+            if (resp === 'granted') hasOrientation = true;
+          } catch(e) {}
+        } else {
+          hasOrientation = true;
+        }
+      }
+
+      if (hasOrientation) {
+        window.addEventListener('deviceorientation', (e) => {
+          if (e.alpha !== null) {
+            const alpha = THREE.MathUtils.degToRad(e.alpha);
+            const beta = THREE.MathUtils.degToRad(e.beta - 90);
+            const gamma = THREE.MathUtils.degToRad(-e.gamma);
+            camera.rotation.set(beta, alpha, gamma, 'YXZ');
+          }
+        });
+      }
+
+      // Drag controls fallback for laptop/desktop
+      window.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('.hud-interactive') && !e.target.classList.contains('hud')) return;
+        isUserInteracting = true;
+        onPointerDownPointerX = e.clientX;
+        onPointerDownPointerY = e.clientY;
+        onPointerDownLon = lon;
+        onPointerDownLat = lat;
+      });
+      window.addEventListener('pointermove', (e) => {
+        if (!isUserInteracting) return;
+        lon = (onPointerDownPointerX - e.clientX) * 0.2 + onPointerDownLon;
+        lat = (e.clientY - onPointerDownPointerY) * 0.2 + onPointerDownLat;
+        lat = Math.max(-85, Math.min(85, lat));
+        const phi = THREE.MathUtils.degToRad(90 - lat);
+        const theta = THREE.MathUtils.degToRad(lon);
+        const target = new THREE.Vector3();
+        target.x = 500 * Math.sin(phi) * Math.cos(theta);
+        target.y = 500 * Math.cos(phi);
+        target.z = 500 * Math.sin(phi) * Math.sin(theta);
+        camera.lookAt(target);
+      });
+      window.addEventListener('pointerup', () => { isUserInteracting = false; });
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      function animate() {
+        requestAnimationFrame(animate);
+        animateClues();
+        renderer.render(scene, camera);
+      }
+      animate();
     }
 
     // Mode A: MindAR Image Tracking
