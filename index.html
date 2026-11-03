@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>The Last Clue — AR Detective Investigation</title>
   
-  <!-- Three.js and MindAR libraries (UMD Bundle) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <!-- Unified Three.js r136 and MindAR libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.136.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.136.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.136.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.1.5/dist/mindar-image-three.prod.js"></script>
 
   <style>
@@ -737,18 +737,10 @@
 
         anchor.onTargetFound = () => {
           document.getElementById('status-dot').classList.add('active');
-          document.getElementById('status-text').innerText = `3D Evidence Discovered: ${clue.name}!`;
           if (!clue.found) {
-            clue.found = true;
-            document.getElementById('sfx-clue').play().catch(()=>{});
-            document.getElementById(clue.slot).classList.add('found');
-          }
-          // Show sleek bottom toast without blocking the 3D view
-          showClueBanner(index);
-
-          const allFound = CLUES.every(c => c.found);
-          if (allFound) {
-            document.getElementById('btn-deduce').style.display = 'block';
+            document.getElementById('status-text').innerText = `Evidence #${index + 1} Sighted! [👆 Tap 3D Model to Collect]`;
+          } else {
+            document.getElementById('status-text').innerText = `Evidence #${index + 1} (${clue.name}) already in inventory`;
           }
         };
         anchor.onTargetLost = () => {
@@ -774,16 +766,30 @@
       const gltfLoader = new THREE.GLTFLoader();
       const textureLoader = new THREE.TextureLoader();
 
-      // Add a dedicated light to this anchor group so the 3D model pops
       if (isCentered) {
-        const anchorLight = new THREE.PointLight(0xffffff, 2.0, 3.0);
-        anchorLight.position.set(0, 0, 0.6);
+        // Holographic Target Base Ring (Guaranteed visible, self-lit)
+        const ringGeo = new THREE.RingGeometry(0.38, 0.44, 32);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        ringMesh.position.set(0, 0, 0.005);
+        parent.add(ringMesh);
+
+        // High intensity point light so metallic models shine
+        const anchorLight = new THREE.PointLight(0xffffff, 2.5, 4.0);
+        anchorLight.position.set(0, 0, 0.8);
         parent.add(anchorLight);
       }
 
       if (clue.type === "gltf") {
         gltfLoader.load(clue.file, (gltf) => {
           const model = gltf.scene;
+          model.traverse((child) => {
+            if (child.isMesh && child.material) {
+              child.material.metalness = 0.15;
+              child.material.roughness = 0.35;
+              child.material.needsUpdate = true;
+            }
+          });
           if (isCentered) {
             // High visibility scale on top of the card
             const arScales = [6.5, 4.8, 1.0, 1.0, 5.5];
@@ -797,7 +803,7 @@
             model.scale.set(...clue.scale);
             model.position.set(...clue.pos);
           }
-          model.userData = { clueIndex: index, isAR: isCentered };
+          model.userData = { clueIndex: index, isAR: isCentered, baseZ: 0.05 };
           parent.add(model);
           clickableObjects.push(model);
         });
@@ -806,10 +812,9 @@
           const arSizes = [null, null, [0.85, 0.95], [0.65, 0.95], null];
           const [pw, ph] = isCentered ? arSizes[index] : [clue.size[0] * 1.5, clue.size[1] * 1.5];
           const geo = new THREE.PlaneGeometry(pw, ph);
-          const mat = new THREE.MeshStandardMaterial({
+          const mat = new THREE.MeshBasicMaterial({
             map: texture,
             transparent: true,
-            roughness: 0.6,
             side: THREE.DoubleSide
           });
           const mesh = new THREE.Mesh(geo, mat);
@@ -820,7 +825,7 @@
             mesh.position.set(...clue.pos);
             if (clue.rot) mesh.rotation.set(...clue.rot);
           }
-          mesh.userData = { clueIndex: index, isAR: isCentered };
+          mesh.userData = { clueIndex: index, isAR: isCentered, baseZ: 0.02 };
           parent.add(mesh);
           clickableObjects.push(mesh);
         });
@@ -944,7 +949,7 @@
             hit = hit.parent;
           }
           if (hit && hit.userData.clueIndex !== undefined) {
-            inspectClue(hit.userData.clueIndex);
+            collectClue(hit.userData.clueIndex, hit);
           }
         }
       }
@@ -953,6 +958,44 @@
     }
 
     let currentActiveClueIndex = null;
+
+    function collectClue(index, meshObj) {
+      const clue = CLUES[index];
+
+      // Jump / bounce celebratory animation on the 3D model
+      if (meshObj) {
+        let bounce = 0;
+        const startZ = meshObj.position.z;
+        const bInt = setInterval(() => {
+          bounce += 0.25;
+          meshObj.position.z = startZ + Math.sin(bounce) * 0.08;
+          meshObj.rotation.z += 0.15;
+          if (bounce >= Math.PI) {
+            clearInterval(bInt);
+            meshObj.position.z = startZ;
+          }
+        }, 25);
+      }
+
+      if (!clue.found) {
+        clue.found = true;
+        document.getElementById('sfx-clue').play().catch(()=>{});
+        document.getElementById(clue.slot).classList.add('found');
+      }
+
+      // Show bottom toast with clue evidence notes
+      showClueBanner(index);
+
+      // Check if all clues found
+      const allFound = CLUES.every(c => c.found);
+      if (allFound) {
+        document.getElementById('btn-deduce').style.display = 'block';
+        document.getElementById('status-text').innerText = "All 5 Clues Collected! Tap [Identify Murder Weapon]";
+      } else {
+        const remaining = CLUES.filter(c => !c.found).length;
+        document.getElementById('status-text').innerText = `Evidence #${index + 1} Collected! ${remaining} remaining.`;
+      }
+    }
 
     function showClueBanner(index) {
       currentActiveClueIndex = index;
@@ -973,26 +1016,13 @@
       }
     }
 
-    // Inspect Clue Modal
+    // Inspect Clue Modal (Full View)
     function inspectClue(index) {
       const clue = CLUES[index];
-      if (!clue.found) {
-        clue.found = true;
-        document.getElementById('sfx-clue').play().catch(()=>{});
-        document.getElementById(clue.slot).classList.add('found');
-      }
-
-      // Show modal
       document.getElementById('evidence-title').innerText = `${clue.icon} ${clue.name}`;
       document.getElementById('evidence-index').innerText = `EVIDENCE #${index + 1}`;
       document.getElementById('evidence-desc').innerText = clue.desc;
       document.getElementById('evidence-modal').style.display = 'flex';
-
-      // Check if all clues found
-      const allFound = CLUES.every(c => c.found);
-      if (allFound) {
-        document.getElementById('btn-deduce').style.display = 'block';
-      }
     }
 
     function reinspect(index) {
